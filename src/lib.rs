@@ -1,93 +1,12 @@
 //! A variant of `std::sync::mpsc` that supports `map`-style operations.
 //!
-//! # The problem at hand
 //!
-//! Consider an event loop, defined as follows:
-//!
-//! ```ignore
-//! let (tx, rx) = channel();
-//! thread::spawn(move || {
-//!   for event in rx {
-//!     match event {
-//!       UIEvent::KeyboardEvent(ev) => { ... },
-//!       UIEvent::MouseEvent(ev) => { ... },
-//!       ...
-//!     }
-//!   }
-//! });
-//! ```
-//!
-//! Now, imagine a system library that can watch for keyboard events, with the following signature:
-//!
-//! ```ignore
-//! impl ThirdPartyLibrary {
-//!   fn register_watch(&self, on_event: Sender<PrimitiveKeyboardEvent>) -> ...;
-//! }
-//! ```
-//!
-//! How can we interact with this library? Well, with `Sender`, the only way is to fire another
-//! thread, as follows:
-//!
-//! ```ignore
-//! let (tx2, rx2) = channel();
-//! let tx = tx.clone(); // That's the tx for my event loop, see above.
-//! thread::spawn(move || {
-//!   for ev in rx {
-//!     match tx.send(UIEvent::KeyboardEvent(ev) {
-//!       Ok(_) => {},
-//!       Err(_) => return, // Cleanup if nobody is listening anymore.
-//!     }
-//!   }
-//! });
-//!
-//! third_party_library.register_watch(tx2);
-//! ```
-//!
-//! Wouldn't it be nicer and more resource-efficient if we could write the following and have it
-//! work without spawning a thread?
-//!
-//! ```ignore
-//! third_party_library.register_watch(tx.map(|ev| UIEvent::KeyboardEvent(ev)));
-//! ```
-//!
-//! Now, let's assume that the situation is slightly more complicated and that our system needs
-//! to handle several keyboards. Now, we need to label each keyboard with a unique key.
-//!
-//! With `Sender`, the only solution is to fire *one thread per keyboard*, i.e.
-//!
-//! ```ignore
-//! let key = ...;
-//! let (tx3, rx3) = channel();
-//! let tx = tx.clone(); // That's the tx for my event loop, see above.
-//! thread::spawn(move || {
-//!   for ev in rx {
-//!     match tx.send(UIEvent::KeyboardEvent(key, ev) {
-//!       Ok(_) => {},
-//!       Err(_) => return, // Cleanup if nobody is listening anymore.
-//!     }
-//!   }
-//! });
-//!
-//! third_party_library.register_watch(tx3);
-//! ```
-//!
-//! Wouldn't it be nicer and more resource-efficient if we could write the following and have it
-//! work without spawning a thread?
-//!
-//! ```ignore
-//! let key = ...;
-//! third_party_library.register_watch(tx.map(move |ev| UIEvent::KeyboardEvent(key, ev)));
-//! ```
-//!
-//! This crate is designed to make the nicer and more resource-efficient strategy possible.
-//!
-//!
-//! # Usage
-//!
-//! This crate is a drop-in replacement for `std::sync::mpsc`. The only difference is that
+//! This crate is near a drop-in replacement for `std::sync::mpsc`. The only difference is that
 //! the type `ExtSender<T>`, which replaces `Sender<T>`, supports operations such as `map`,
 //! `filter` and `filter_map` -- see the documentation of `TransformableSender` for all
 //! details and examples.
+//!
+//! The type `Receiver<T>` is reexported from std::sync::mpsc::Receiver.
 use std::sync::mpsc::{ channel as std_channel, Sender };
 pub use std::sync::mpsc::Receiver;
 
@@ -116,8 +35,8 @@ use std::ops::Deref;
 /// }
 ///
 /// thread::spawn(move || {
-///   for msg in rx {
-///     println!("Received message {:?}", msg);
+///   for (msg, i) in rx.iter().zip(1..5) {
+///     assert_eq!(msg, i);
 ///   }
 /// });
 /// ```
@@ -146,7 +65,7 @@ pub trait ExtSender<T>: Send + 'static where T: Send + 'static {
 
     /// A low-level method used to define Clone(). Probably not useful outside of this crate. May
     /// disappear in future versions.
-    fn id(&self) -> Box<ExtSender<T>>;
+    fn internal_clone(&self) -> Box<ExtSender<T>>;
 }
 
 pub trait TransformableSender<V>: Send + 'static where V: Send + 'static, Self: ExtSender<V> + Clone {
@@ -166,48 +85,41 @@ pub trait TransformableSender<V>: Send + 'static where V: Send + 'static, Self: 
     /// # Example
     ///
     /// ```
-    /// use std::thread;
     /// use transformable_channels::*;
     ///
     /// let (tx, rx) = channel();
     ///
     /// #[derive(Debug)]
     /// struct LabelledValue<T> {
-    ///   origin: String,
+    ///   origin: usize,
     ///   value: T,
     /// }
     ///
     /// for i in 1 .. 5 {
     ///   // Let us label messages as they are sent.
-    ///   let origin = format!("Thread: {}", i);
     ///   let tx = tx.map(move |msg| {
     ///      LabelledValue {
-    ///        origin: origin.clone(),
+    ///        origin: i,
     ///        value: msg,
     ///      }
     ///   });
     ///
-    ///   thread::spawn(move || {
-    ///     for i in 1 .. 5 {
-    ///       tx.send(i).unwrap();
-    ///     }
-    ///   });
+    ///   tx.send(i).unwrap();
     /// }
     ///
-    /// thread::spawn(move || {
-    ///   for msg in rx {
-    ///     // Will displayed 1 .. 5, labelled with their thread of origin.
-    ///     println!("Received message {:?}", msg);
-    ///   }
-    /// });
+    /// for _ in 1 .. 5 {
+    ///   let msg = rx.recv().unwrap();
+    ///   assert_eq!(msg.origin, msg.value);
+    /// }
     /// ```
-    fn map<F, T>(&self, f: F) -> MappedSender<F, T, V> where
+    fn map<F, T>(&self, f: F) -> MappedSender<F, T, V, Self> where
+        Self: Sized,
         F: Fn(T) -> V + Sync + Send + 'static,
         T: Send + 'static,
         V: Send + 'static
     {
         MappedSender {
-            wrapped: self.id(),
+            wrapped: self.clone(),
             transformer: Arc::new(f),
             phantom: PhantomData
         }
@@ -228,35 +140,29 @@ pub trait TransformableSender<V>: Send + 'static where V: Send + 'static, Self: 
     /// # Example
     ///
     /// ```
-    /// use std::thread;
     /// use transformable_channels::*;
     ///
     /// let (tx, rx) = channel();
     ///
-    /// for i in 1 .. 5 {
-    ///   // We are only interested in even messages
-    ///   let tx = tx.filter(move |msg| {
-    ///      msg % 2 == 0
-    ///   });
+    /// // We are only interested in even messages
+    /// let tx = tx.filter(move |msg| {
+    ///    msg % 2 == 0
+    /// });
     ///
-    ///   thread::spawn(move || {
-    ///     for i in 1 .. 5 {
-    ///       tx.send(i).unwrap();
-    ///     }
-    ///   });
+    /// for i in 1 .. 10 {
+    ///   tx.send(i).unwrap();
     /// }
     ///
-    /// thread::spawn(move || {
-    ///   for msg in rx {
-    ///     println!("Received message {:?}", msg);
-    ///   }
-    /// });
+    /// for _ in 1 .. 5 {
+    ///   assert!(rx.recv().unwrap() % 2 == 0);
+    /// }
     /// ```
-    fn filter<F>(&self, f: F) -> FilteredSender<F, V> where
+    fn filter<F>(&self, f: F) -> FilteredSender<F, V, Self> where
+        Self: Sized,
         F: Fn(&V) -> bool + Sync + Send + 'static,
     {
         FilteredSender {
-            wrapped: self.id(),
+            wrapped: self.clone(),
             filter: Arc::new(f),
             phantom: PhantomData
         }
@@ -277,40 +183,34 @@ pub trait TransformableSender<V>: Send + 'static where V: Send + 'static, Self: 
     /// # Example
     ///
     /// ```
-    /// use std::thread;
     /// use transformable_channels::*;
     ///
     /// let (tx, rx) = channel();
     ///
-    /// for i in 1 .. 5 {
-    ///   // We are only interested in even messages
-    ///   let tx = tx.filter_map(move |msg| {
-    ///      if msg % 2 == 0 {
-    ///        Some("This was an even message")
-    ///      } else {
-    ///        None
-    ///      }
-    ///   });
+    /// // We are only interested in even messages
+    /// let tx = tx.filter_map(move |msg| {
+    ///    if msg % 2 == 0 {
+    ///      Some( msg + 1 )
+    ///    } else {
+    ///      None
+    ///    }
+    /// });
     ///
-    ///   thread::spawn(move || {
-    ///     for i in 1 .. 5 {
-    ///       tx.send(i).unwrap();
-    ///     }
-    ///   });
+    /// for i in 1 .. 10 {
+    ///   tx.send(i).unwrap();
     /// }
     ///
-    /// thread::spawn(move || {
-    ///   for msg in rx {
-    ///     println!("Received message {:?}", msg);
-    ///   }
-    /// });
+    /// for i in 1 .. 5 {
+    ///   assert_eq!(rx.recv().unwrap(), i * 2 + 1);
+    /// }
     /// ```
-    fn filter_map<F, T, U: ?Sized>(&self, f: F) -> FilterMappedSender<F, T, V> where
+    fn filter_map<F, T>(&self, f: F) -> FilterMappedSender<F, T, V, Self> where
+        Self: Sized,
         F: Fn(T) -> Option<V> + Sync + Send + 'static,
         T: Send + 'static,
     {
         FilterMappedSender {
-            wrapped: self.id(),
+            wrapped: self.clone(),
             transformer: Arc::new(f),
             phantom: PhantomData
         }
@@ -322,13 +222,13 @@ impl<T> ExtSender<T> for Box<ExtSender<T>> where T: Send + 'static {
     fn send(&self, t: T) -> Result<(), ()> {
         self.deref().send(t)
     }
-    fn id(&self) -> Box<ExtSender<T>> {
-        self.deref().id()
+    fn internal_clone(&self) -> Box<ExtSender<T>> {
+        self.deref().internal_clone()
     }
 }
 impl<T> Clone for Box<ExtSender<T>> where T: Send + 'static {
   fn clone(&self) -> Self {
-      self.id()
+      self.internal_clone()
   }
 }
 impl<T> TransformableSender<T> for Box<ExtSender<T>> where T: Send + 'static { }
@@ -348,7 +248,7 @@ impl<T> ExtSender<T> for RawSender<T> where T: Send + 'static {
     }
 
     /// Clone the wrapped `Sender` and wrap the result.
-    fn id(&self) -> Box<ExtSender<T>> {
+    fn internal_clone(&self) -> Box<ExtSender<T>> {
         Box::new(RawSender {
             std_sender: self.std_sender.clone()
         })
@@ -364,16 +264,18 @@ impl<T> Clone for RawSender<T> where T: Send + 'static {
 impl<T> TransformableSender<T> for RawSender<T> where T: Send + 'static { }
 
 /// An `ExtSender` obtained from a call to method `filter_map`.
-pub struct FilterMappedSender<F, T, V> where
+pub struct FilterMappedSender<F, T, V, W> where
+    W: ExtSender<V> + TransformableSender<V> + Sized,
     F: Fn(T) -> Option<V> + Sync + Send + 'static,
     T: Send + 'static,
     V: Send + 'static,
 {
-    wrapped: Box<ExtSender<V>>,
+    wrapped: W,
     transformer: Arc<F>,
     phantom: PhantomData<(T, V)>
 }
-impl<F, T, V> ExtSender<T> for FilterMappedSender<F, T, V> where
+impl<F, T, V, W> ExtSender<T> for FilterMappedSender<F, T, V, W> where
+    W: ExtSender<V> + TransformableSender<V> + Sized,
     F: Fn(T) -> Option<V> + Sync + Send + 'static,
     T: Send + 'static,
     V: Send + 'static
@@ -384,45 +286,49 @@ impl<F, T, V> ExtSender<T> for FilterMappedSender<F, T, V> where
             Some(t2) => (self.wrapped).send(t2)
         }
     }
-    fn id(&self) -> Box<ExtSender<T>> {
+    fn internal_clone(&self) -> Box<ExtSender<T>> {
         Box::new(FilterMappedSender {
-            wrapped: self.wrapped.id(),
+            wrapped: self.wrapped.clone(),
             transformer: self.transformer.clone(),
             phantom: PhantomData::<(T, V)>
         })
     }
 }
-impl<F, T, V> Clone for FilterMappedSender<F, T, V>  where
+impl<F, T, V, W> Clone for FilterMappedSender<F, T, V, W>  where
+    W: ExtSender<V> + TransformableSender<V> + Sized,
     F: Fn(T) -> Option<V> + Sync + Send + 'static,
     T: Send + 'static,
     V: Send + 'static
 {
     fn clone(&self) -> Self {
         FilterMappedSender {
-            wrapped: self.wrapped.id(),
+            wrapped: self.wrapped.clone(),
             transformer: self.transformer.clone(),
             phantom: PhantomData
         }
     }
 }
-impl<F, T, V> TransformableSender<T> for FilterMappedSender<F, T, V>  where
+impl<F, T, V, W> TransformableSender<T> for FilterMappedSender<F, T, V, W>  where
+    W: ExtSender<V> + TransformableSender<V> + Sized,
     F: Fn(T) -> Option<V> + Sync + Send + 'static,
     T: Send + 'static,
     V: Send + 'static
 {}
 
     /// An `ExtSender` obtained from a call to method `filter`.
-pub struct FilteredSender<F, T> where
+pub struct FilteredSender<F, T, W> where
     F: Fn(&T) -> bool + Sync + Send + 'static,
     T: Send + 'static,
+    W: ExtSender<T> + TransformableSender<T> + Sized,
 {
-    wrapped: Box<ExtSender<T>>,
+    wrapped: W,
     filter: Arc<F>,
     phantom: PhantomData<T>
 }
-impl<F, T> ExtSender<T> for FilteredSender<F, T> where
+impl<F, T, W> ExtSender<T> for FilteredSender<F, T, W> where
     F: Fn(&T) -> bool + Sync + Send + 'static,
     T: Send + 'static,
+    W: ExtSender<T> + TransformableSender<T> + Sized,
 {
     fn send(&self, t: T) -> Result<(), ()> {
         if (self.filter)(&t) {
@@ -431,17 +337,18 @@ impl<F, T> ExtSender<T> for FilteredSender<F, T> where
             Ok(())
         }
     }
-    fn id(&self) -> Box<ExtSender<T>> {
+    fn internal_clone(&self) -> Box<ExtSender<T>> {
         Box::new(FilteredSender {
-            wrapped: self.wrapped.id(),
+            wrapped: self.wrapped.clone(),
             filter: self.filter.clone(),
             phantom: PhantomData
         })
     }
 }
-impl<F, T> Clone for FilteredSender<F, T> where
+impl<F, T, W> Clone for FilteredSender<F, T, W> where
     F: Fn(&T) -> bool + Sync + Send + 'static,
     T: Send + 'static,
+    W: ExtSender<T> + TransformableSender<T> + Sized,
 {
     fn clone(&self) -> Self {
         FilteredSender {
@@ -451,21 +358,24 @@ impl<F, T> Clone for FilteredSender<F, T> where
         }
     }
 }
-impl<F, T> TransformableSender<T> for FilteredSender<F, T> where
+impl<F, T, W> TransformableSender<T> for FilteredSender<F, T, W> where
     F: Fn(&T) -> bool + Sync + Send + 'static,
     T: Send + 'static,
+    W: ExtSender<T> + TransformableSender<T> + Sized,
 {}
 
-pub struct MappedSender<F, T, V> where
+pub struct MappedSender<F, T, V, W> where
+    W: ExtSender<V> + TransformableSender<V> + Sized,
     F: Fn(T) -> V + Sync + Send + 'static,
     T: Send + 'static,
     V: Send + 'static,
 {
-    wrapped: Box<ExtSender<V>>,
+    wrapped: W,
     transformer: Arc<F>,
     phantom: PhantomData<(T, V)>
 }
-impl<F, T, V> ExtSender<T> for MappedSender<F, T, V> where
+impl<F, T, V, W> ExtSender<T> for MappedSender<F, T, V, W> where
+    W: ExtSender<V> + TransformableSender<V> + Sized,
     F: Fn(T) -> V + Sync + Send + 'static,
     T: Send + 'static,
     V: Send + 'static
@@ -473,15 +383,16 @@ impl<F, T, V> ExtSender<T> for MappedSender<F, T, V> where
     fn send(&self, t: T) -> Result<(), ()> {
         (self.wrapped).send((self.transformer)(t))
     }
-    fn id(&self) -> Box<ExtSender<T>> {
+    fn internal_clone(&self) -> Box<ExtSender<T>> {
         Box::new(MappedSender {
-            wrapped: self.wrapped.id(),
+            wrapped: self.wrapped.clone(),
             transformer: self.transformer.clone(),
             phantom: PhantomData::<(T, V)>
         })
     }
 }
-impl<F, T, V> Clone for MappedSender<F, T, V> where
+impl<F, T, V, W> Clone for MappedSender<F, T, V, W> where
+    W: ExtSender<V> + TransformableSender<V> + Sized,
     F: Fn(T) -> V + Sync + Send + 'static,
     T: Send + 'static,
     V: Send + 'static
@@ -494,35 +405,36 @@ impl<F, T, V> Clone for MappedSender<F, T, V> where
         }
     }
 }
-impl<F, T, V> TransformableSender<T> for MappedSender<F, T, V> where
+impl<F, T, V, W> TransformableSender<T> for MappedSender<F, T, V, W> where
+    W: ExtSender<V> + TransformableSender<V> + Sized,
     F: Fn(T) -> V + Sync + Send + 'static,
     T: Send + 'static,
     V: Send + 'static
 {}
 
 #[test]
-fn test() {
-    // Compilation test: ensure that we can chain `map` several times.
+fn test_chain_map() {
+    println!("* Making sure that chain composition of .map() takes place in the right order");
     let (tx, rx) = channel();
-    tx.map(|x| x + 1).map(|x| x - 1).send(0).unwrap();;
-    assert_eq!(rx.recv().unwrap(), 0);
+    let tx = tx.map(|x| x + 1).map(|x| x * 2);
+    tx.send(0).unwrap();
+    assert_eq!(rx.recv().unwrap(), 1);
+}
 
-/*
-    let (tx, rx) = channel::<i32>();
-    let tx2 = tx.filter(|x| *x == 0).map(|x| x + 1);
-    let tx3 = tx.filter_map(|x: i32| if x == 0 { Some (x + 1) } else { None });
+
+#[test]
+fn test_filter_map() {
+    let (tx, rx) = channel();
+    let tx2 = (tx.map(|x| { x + 1 })).filter(|x| x % 2 == 0);
+    let tx3 = tx.filter_map(|x| if x%2 == 0 { Some (x + 1) } else { None });
+
     for i in 1 .. 10 {
-        tx2.send(i);
-        tx3.send(i);
+        tx2.send(i).unwrap();
+        tx3.send(i).unwrap();
+        if i % 2 == 0 {
+            let got_2 = rx.recv().unwrap();
+            let got_3 = rx.recv().unwrap();
+            assert_eq!(got_2, got_3);
+        }
     }
-    drop(tx2);
-    drop(tx3);
-    drop(tx);
-    for i in 1 .. 10 {
-        assert_eq!(rx.recv().unwrap(), rx.recv().unwrap());
-    }
-    for msg in rx {
-        panic!("Well, there shouldn't be any message left");
-    }
-*/
 }

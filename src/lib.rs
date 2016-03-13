@@ -215,6 +215,35 @@ pub trait TransformableSender<V>: Send + 'static where V: Send + 'static, Self: 
             phantom: PhantomData
         }
     }
+
+    /// From two `ExtSender`s, derive a new `ExtSender` which sends to both `ExtSender`s.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use transformable_channels::*;
+    ///
+    /// let (tx_1, rx_1) = channel();
+    /// let (tx_2, rx_2) = channel();
+    ///
+    /// let tx = tx_1.tee(&tx_2);
+    ///
+    /// tx.send(("one".to_string(), 1)).unwrap();
+    /// assert_eq!(rx_1.recv().unwrap(), "one".to_string());
+    /// assert_eq!(rx_2.recv().unwrap(), 1);
+    /// ```
+    fn tee<S, W>(&self, other: &S) -> TeedSender<Self, S, V, W> where
+        Self: Sized,
+        S: ExtSender<W> + TransformableSender<W>,
+        W: Send + 'static,
+    {
+        TeedSender {
+            left: self.clone(),
+            right: other.clone(),
+            phantom: PhantomData
+        }
+    }
+
 }
 
 /// A trait object for an ExtSender.
@@ -315,7 +344,7 @@ impl<F, T, V, W> TransformableSender<T> for FilterMappedSender<F, T, V, W>  wher
     V: Send + 'static
 {}
 
-    /// An `ExtSender` obtained from a call to method `filter`.
+/// An `ExtSender` obtained from a call to method `filter`.
 pub struct FilteredSender<F, T, W> where
     F: Fn(&T) -> bool + Sync + Send + 'static,
     T: Send + 'static,
@@ -364,6 +393,7 @@ impl<F, T, W> TransformableSender<T> for FilteredSender<F, T, W> where
     W: ExtSender<T> + TransformableSender<T> + Sized,
 {}
 
+/// An `ExtSender` obtained from a call to method `map`.
 pub struct MappedSender<F, T, V, W> where
     W: ExtSender<V> + TransformableSender<V> + Sized,
     F: Fn(T) -> V + Sync + Send + 'static,
@@ -411,6 +441,55 @@ impl<F, T, V, W> TransformableSender<T> for MappedSender<F, T, V, W> where
     T: Send + 'static,
     V: Send + 'static
 {}
+
+/// An `ExtSender` obtained from a call to method `tee`.
+pub struct TeedSender<S1, S2, V1, V2> where
+    S1: ExtSender<V1> + TransformableSender<V1> + Sized,
+    S2: ExtSender<V2> + TransformableSender<V2> + Sized,
+    V1: Send + 'static,
+    V2: Send + 'static,
+{
+    left: S1,
+    right: S2,
+    phantom: PhantomData<(V1, V2)>
+}
+impl<S1, S2, V1, V2> ExtSender<(V1, V2)> for TeedSender<S1, S2, V1, V2>
+where
+    S1: ExtSender<V1> + TransformableSender<V1> + Sized,
+    S2: ExtSender<V2> + TransformableSender<V2> + Sized,
+    V1: Send + 'static,
+    V2: Send + 'static,
+{
+    fn send(&self, (left, right): (V1, V2)) -> Result<(), ()> {
+        match (self.left.send(left), self.right.send(right)) {
+            (Err(()), Err(())) => Err(()), // By spec, return `Err()` only if we are sure that
+                // the message didn't reach is destination.
+            _ => Ok(()) // Otherwise, return `Ok()`
+        }
+    }
+    fn internal_clone(&self) -> Box<ExtSender<(V1, V2)>> {
+        Box::new(TeedSender {
+            left: self.left.clone(),
+            right: self.right.clone(),
+            phantom: PhantomData
+        })
+    }
+}
+impl<S1, S2, V1, V2> Clone for TeedSender<S1, S2, V1, V2>
+where
+    S1: ExtSender<V1> + TransformableSender<V1> + Sized,
+    S2: ExtSender<V2> + TransformableSender<V2> + Sized,
+    V1: Send + 'static,
+    V2: Send + 'static,
+{
+    fn clone(&self) -> Self {
+        TeedSender {
+            left: self.left.clone(),
+            right: self.right.clone(),
+            phantom: PhantomData
+        }
+    }
+}
 
 #[test]
 fn test_chain_map() {

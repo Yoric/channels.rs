@@ -2,5 +2,12 @@
 name = "transformable_channels"
 version = "0.1.0"
 authors = ["David Rajchenbach-Teller <dteller@mozilla.com>"]
+description = "Rust channels are a convenient abstraction, but for many uses cases, they miss high-level transformations such as `map`, `filter`, ... . This crate introduces them."
+homepage = "https://github.com/Yoric/channels.rs/"
+repository = "https://github.com/Yoric/channels.rs/"
+documentation = "http://yoric.github.io/channels.rs/doc/transformable_channels/"
+readme = "README.md"
+keywords = ["channels", "map", "mpsc", "iterator"]
+license = "MPL-2.0"
 
 [dependencies]

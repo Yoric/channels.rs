@@ -1,0 +1,1 @@
+initSidebarItems({"mod":[["mpsc","Near drop-in replacement for std::sync::mpsc; A variant of `std::sync::mpsc` that supports `map`-style operations."]]});

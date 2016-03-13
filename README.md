@@ -1,5 +1,7 @@
 [![Build Status](https://api.travis-ci.org/Yoric/channels.rs.svg?branch=master)](https://travis-ci.org/Yoric/channels.rs)
 
+[Documentation](http://yoric.github.io/channels.rs/doc/transformable_channels/)
+
 # The problem at hand
 
 Consider an event loop, defined as follows:
@@ -82,4 +84,3 @@ third_party_library.register_watch(tx.map(move |ev| UIEvent::KeyboardEvent(key, 
 This crate is designed to make the nicer and more resource-efficient strategy possible.
 
 
-# Usage

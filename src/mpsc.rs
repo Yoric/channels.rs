@@ -226,18 +226,18 @@ pub trait TransformableSender<V>: Send + 'static where V: Send + 'static, Self: 
     /// let (tx_1, rx_1) = channel();
     /// let (tx_2, rx_2) = channel();
     ///
-    /// let tx = tx_1.tee(&tx_2);
+    /// let tx = tx_1.tie(&tx_2);
     ///
     /// tx.send(("one".to_string(), 1)).unwrap();
     /// assert_eq!(rx_1.recv().unwrap(), "one".to_string());
     /// assert_eq!(rx_2.recv().unwrap(), 1);
     /// ```
-    fn tee<S, W>(&self, other: &S) -> TeedSender<Self, S, V, W> where
+    fn tie<S, W>(&self, other: &S) -> TiedSender<Self, S, V, W> where
         Self: Sized,
         S: ExtSender<W> + TransformableSender<W>,
         W: Send + 'static,
     {
-        TeedSender {
+        TiedSender {
             left: self.clone(),
             right: other.clone(),
             phantom: PhantomData
@@ -442,8 +442,8 @@ impl<F, T, V, W> TransformableSender<T> for MappedSender<F, T, V, W> where
     V: Send + 'static
 {}
 
-/// An `ExtSender` obtained from a call to method `tee`.
-pub struct TeedSender<S1, S2, V1, V2> where
+/// An `ExtSender` obtained from a call to method `tie`.
+pub struct TiedSender<S1, S2, V1, V2> where
     S1: ExtSender<V1> + TransformableSender<V1> + Sized,
     S2: ExtSender<V2> + TransformableSender<V2> + Sized,
     V1: Send + 'static,
@@ -453,7 +453,7 @@ pub struct TeedSender<S1, S2, V1, V2> where
     right: S2,
     phantom: PhantomData<(V1, V2)>
 }
-impl<S1, S2, V1, V2> ExtSender<(V1, V2)> for TeedSender<S1, S2, V1, V2>
+impl<S1, S2, V1, V2> ExtSender<(V1, V2)> for TiedSender<S1, S2, V1, V2>
 where
     S1: ExtSender<V1> + TransformableSender<V1> + Sized,
     S2: ExtSender<V2> + TransformableSender<V2> + Sized,
@@ -468,14 +468,14 @@ where
         }
     }
     fn internal_clone(&self) -> Box<ExtSender<(V1, V2)>> {
-        Box::new(TeedSender {
+        Box::new(TiedSender {
             left: self.left.clone(),
             right: self.right.clone(),
             phantom: PhantomData
         })
     }
 }
-impl<S1, S2, V1, V2> Clone for TeedSender<S1, S2, V1, V2>
+impl<S1, S2, V1, V2> Clone for TiedSender<S1, S2, V1, V2>
 where
     S1: ExtSender<V1> + TransformableSender<V1> + Sized,
     S2: ExtSender<V2> + TransformableSender<V2> + Sized,
@@ -483,7 +483,7 @@ where
     V2: Send + 'static,
 {
     fn clone(&self) -> Self {
-        TeedSender {
+        TiedSender {
             left: self.left.clone(),
             right: self.right.clone(),
             phantom: PhantomData

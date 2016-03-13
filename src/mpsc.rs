@@ -40,6 +40,47 @@ use std::ops::Deref;
 ///   }
 /// });
 /// ```
+///
+/// # Example
+/// ```
+/// use transformable_channels::mpsc::*;
+/// let (tx, rx) = channel();
+///
+/// // You can use `tx` and `rx` exactly as usual.
+///
+/// tx.send("Hello".to_owned());
+/// assert_eq!(rx.recv().unwrap(), "Hello".to_owned());
+///
+/// // In addition, `tx` can be cheaply transformed through the use of `map`
+///
+/// let tx_number = tx.map(|num: i32| format!("Number {}", num));
+/// tx_number.send(42);
+/// assert_eq!(rx.recv().unwrap(), "Number 42".to_owned());
+///
+///
+/// // We also have `filter`.
+///
+/// let tx_odd = tx_number.filter(|num| num % 2 == 0);
+/// tx_odd.send(41); // This one will be skipped.
+/// tx_odd.send(42);
+/// assert_eq!(rx.recv().unwrap(), "Number 42".to_owned());
+///
+///
+/// // Instead of `map` + `filter`, `filter_map` works nicely, too.
+///
+/// let tx_odd_2 = tx.filter_map(|num: i32| {
+///   if num % 2 == 0 {
+///     Some(format!("Number {}", num))
+///   } else {
+///     None
+///   }
+/// });
+/// tx_odd_2.send(41); // This one will be skipped.
+/// tx_odd_2.send(42);
+/// assert_eq!(rx.recv().unwrap(), "Number 42".to_owned());
+///
+/// // ...
+// ```
 pub fn channel<T>() -> (RawSender<T>, Receiver<T>) where T: Send + 'static {
     let (tx, rx) = std_channel();
     (RawSender { std_sender: tx }, rx)
